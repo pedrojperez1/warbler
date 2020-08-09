@@ -15,7 +15,7 @@ from models import db, connect_db, Message, User
 # before we import our app, since that will have already
 # connected to the database
 
-os.environ['DATABASE_URL'] = "postgresql:///warbler-test"
+os.environ['DATABASE_URL'] = "postgresql:///warbler_test"
 
 
 # Now we can import app
@@ -48,11 +48,16 @@ class MessageViewTestCase(TestCase):
                                     email="test@test.com",
                                     password="testuser",
                                     image_url=None)
-
+        user = User(id=999, username='testuser2', email='test2@test.com', password='testuser2', image_url=None)
+        db.session.add(user)
         db.session.commit()
+    
+    def tearDown(self):
+        """Rollback bad transactions"""
+        db.session.rollback()
 
     def test_add_message(self):
-        """Can use add a message?"""
+        """Can user add a message?"""
 
         # Since we need to change the session to mimic logging in,
         # we need to use the changing-session trick:
@@ -71,3 +76,87 @@ class MessageViewTestCase(TestCase):
 
             msg = Message.query.one()
             self.assertEqual(msg.text, "Hello")
+    
+    def test_add_message_other_user(self):
+        """Can user add a message for another user?"""
+        with self.client as c:
+            with c.session_transaction() as sess:
+                sess[CURR_USER_KEY] = self.testuser.id
+        
+            resp = c.post("/messages/new", data={"text": "Ayyy", "user_id": 999}, follow_redirects=True)
+            self.assertEqual(resp.status_code, 200)
+
+            query = Message.query.filter(Message.user_id == 999).first()
+            self.assertIsNone(query)
+            
+
+
+    
+    def test_delete_message(self):
+        """Can user delete their message?"""
+        with self.client as c:
+            with c.session_transaction() as sess:
+                sess[CURR_USER_KEY] = self.testuser.id
+        
+            msg = Message(text="Test message", user_id=self.testuser.id)
+            msg.id = 100
+            
+            db.session.add(msg)
+            db.session.commit()
+
+            resp = c.post(f"/messages/{msg.id}/delete", follow_redirects=True)
+            self.assertEqual(resp.status_code, 200)
+            query = Message.query.get(100)
+            self.assertIsNone(query)
+
+
+    def test_delete_message_other_user(self):
+        """Can user delete other users' message?"""
+        with self.client as c:
+            with c.session_transaction() as sess:
+                sess[CURR_USER_KEY] = self.testuser.id
+
+            msg = Message(text="Test message", user_id=999)
+            msg.id = 200
+            db.session.add(msg)
+            db.session.commit()
+
+            unauth_resp = c.post(f"/messages/{msg.id}/delete", follow_redirects=True)
+            self.assertEqual(unauth_resp.status_code, 200)
+            html = unauth_resp.get_data(as_text=True)
+            self.assertIn('Access unauthorized.', html)
+            unauth_query = Message.query.get(200)
+            self.assertIsNotNone(unauth_query)
+
+        
+    def test_add_message_no_login(self):
+        """Does user get redirected when unauthorized?"""
+        with self.client as c:
+            resp = c.post("/messages/new", data={"text": "Hello"}, follow_redirects=True)
+            html = resp.get_data(as_text=True)
+
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn('Access unauthorized.', html)
+            
+            msg = Message.query.first()
+            self.assertIsNone(msg)
+
+    def test_view_message(self):
+        """Can user view a message?"""
+        with self.client as c:
+            with c.session_transaction() as sess:
+                sess[CURR_USER_KEY] = self.testuser.id
+            
+            msg = Message(text="Test message", user_id=self.testuser.id)
+            msg.id = 100
+            db.session.add(msg)
+            db.session.commit()
+
+            resp = c.get("messages/100")
+            html = resp.get_data(as_text=True)
+
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn("Test message", html)
+
+
+
